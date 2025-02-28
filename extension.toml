@@ -8,4 +8,4 @@ repository = "https://github.com/tzabbi/zed-gitlab-ci-ls"
 
 [language_servers.gitlab-ci]
 name = "gitlab-ci-ls"
-language = "GitLab CI"
+language = "YAML"

@@ -1,5 +1,0 @@
-name = "GitLab-ci"
-grammar = "gitlab-ci"
-path_suffixes = ["gitlab-ci.yml"]
-line_comments = ["# "]
-brackets = []
