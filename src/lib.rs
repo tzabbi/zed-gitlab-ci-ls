@@ -6,19 +6,18 @@ impl zed::Extension for GitLabCiLsExtension {
     fn new() -> Self {
         Self
     }
-
     fn language_server_command(
         &mut self,
-        _config: zed::LanguageServerConfig,
-        worktree: &zed::Worktree,
-    ) -> Result<zed::Command> {
+        _language_server_id: &zed_extension_api::LanguageServerId,
+        worktree: &zed_extension_api::Worktree,
+    ) -> zed_extension_api::Result<zed_extension_api::Command> {
         let path = worktree
             .which("gitlab-ci-ls")
             .ok_or_else(|| "The LSP for gitlab-ci 'gitlab-ci-ls' is not installed".to_string())?;
 
         Ok(zed::Command {
             command: path,
-            args: vec!["serve".to_string()],
+            args: vec![],
             env: Default::default(),
         })
     }

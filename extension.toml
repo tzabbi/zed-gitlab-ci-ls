@@ -5,3 +5,7 @@ schema_version = 1
 authors = ["Tom Zaspel tom@zaspel.it"]
 description = "Language Server for gitlab-ci"
 repository = "https://github.com/tzabbi/zed-gitlab-ci-ls"
+
+[language_servers.gitlab-ci]
+name = "gitlab_ci_ls"
+language = "GitLab CI"

@@ -7,27 +7,6 @@
 
 (variable) @variable
 
-; Function calls
-
-(function_call
-  function: (identifier) @function)
-
-(method_call
-  method: (selector_expression
-    field: (field_identifier) @function))
-
-; Delimiters
-
-"." @punctuation.delimiter
-"," @punctuation.delimiter
-
-"{{" @punctuation.bracket
-"}}" @punctuation.bracket
-"{{-" @punctuation.bracket
-"-}}" @punctuation.bracket
-")" @punctuation.bracket
-"(" @punctuation.bracket
-
 ; Keywords
 
 "default" @keyword
@@ -85,7 +64,6 @@
 [
   (true)
   (false)
-  (nil)
 ] @constant.builtin
 
 (comment) @comment
