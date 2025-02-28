@@ -1,0 +1,11 @@
+id = "gitlab-ci-ls"
+name = "gitlab-ci-ls"
+version = "1.0.0"
+schema_version = 1
+authors = ["Tom Zaspel tom@zaspel.it"]
+description = "Language Server for gitlab-ci"
+repository = "https://github.com/tzabbi/zed-gitlab-ci-ls"
+
+[language_servers.gitlab-ci]
+name = "gitlab-ci-ls"
+language = "YAML"
