@@ -1,8 +1,8 @@
 id = "gitlab-ci-ls"
 name = "gitlab-ci-ls"
-version = "1.0.0"
+version = "1.0.1"
 schema_version = 1
-authors = ["Tom Zaspel tom@zaspel.it"]
+authors = ["Tom Zaspel <tom@zaspel.it>"]
 description = "Language Server for gitlab-ci"
 repository = "https://github.com/tzabbi/zed-gitlab-ci-ls"
 
