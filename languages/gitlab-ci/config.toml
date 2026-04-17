@@ -1,0 +1,4 @@
+name = "GitLab CI"
+grammar = "yaml"
+path_suffixes = ["gitlab-ci.yml", "gitlab-ci.yaml"]
+line_comments = ["# "]
