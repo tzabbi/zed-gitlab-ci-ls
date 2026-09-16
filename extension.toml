@@ -3,9 +3,16 @@ name = "gitlab-ci-ls"
 version = "1.0.1"
 schema_version = 1
 authors = ["Tom Zaspel <tom@zaspel.it>"]
-description = "Language Server for gitlab-ci"
+description = "GitLab CI language support with shell highlighting and gitlab-ci-ls"
 repository = "https://github.com/tzabbi/zed-gitlab-ci-ls"
 
 [language_servers.gitlab-ci]
 name = "gitlab-ci-ls"
-language = "YAML"
+languages = ["Gitlab-CI"]
+
+[language_servers.gitlab-ci.language_ids]
+"Gitlab-CI" = "yaml"
+
+[grammars.yaml]
+repository = "https://github.com/zed-industries/tree-sitter-yaml"
+rev = "baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a"
