@@ -534,6 +534,9 @@ impl Proxy {
                 Some(mut virtual_document) => {
                     if virtual_document.script.text != script.text {
                         virtual_document.version += 1;
+                        // They refer to the old text; mapping them with the new
+                        // script would misplace them until fresh ones arrive.
+                        virtual_document.diagnostics.clear();
                         self.notify_server(
                             Backend::Bash,
                             "textDocument/didChange",
