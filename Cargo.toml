@@ -1,3 +1,6 @@
+[workspace]
+members = ["gitlab-ci-bash-ls"]
+
 [package]
 name = "gitlab-ci-ls"
 version = "1.0.1"
@@ -15,4 +18,3 @@ codegen-units = 1 # Allows LLVM to perform better optimization.
 lto = true # Enables link-time-optimizations.
 opt-level = "s" # Prioritizes small binary size. Use `3` if you prefer speed.
 strip = true # Ensures debug symbols are removed.
-

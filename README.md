@@ -64,6 +64,102 @@ file association in Zed's settings, for example:
 }
 ```
 
+## Shell scripts and schema completion (`gitlab-ci-bash-ls`)
+
+`gitlab-ci-ls` completes values such as stages, `extends`, and `needs`, but not
+keys. The optional `gitlab-ci-bash-ls` server fills the gaps. Like `helm-ls`, it
+is a proxy in front of two existing language servers:
+
+- [bash-language-server](https://github.com/bash-lsp/bash-language-server) for
+  the scripts inside a CI file: ShellCheck diagnostics, hover, and completion.
+  Every script is opened as a virtual `.sh` document, and all positions are
+  mapped back to the YAML file.
+- [yaml-language-server](https://github.com/redhat-developer/yaml-language-server)
+  for the rest of the file, with GitLab's official CI JSON schema: key completion
+  (for example `stage`, `script`, or `rules` inside a job), hover, and
+  validation. Zed attaches its own YAML server only to the YAML language, not to
+  **Gitlab-CI**, so this replaces it for CI files.
+
+```sh
+npm install -g bash-language-server yaml-language-server
+# or: brew install bash-language-server yaml-language-server
+# plus ShellCheck, e.g. brew install shellcheck / apt install shellcheck
+cargo install --path gitlab-ci-bash-ls   # from a checkout of this repository
+```
+
+Each backend is optional; if one is missing, the proxy shows a warning and
+provides the features of the other.
+
+The extension finds all binaries on Zed's `PATH`. To use other locations:
+
+```json
+{
+  "lsp": {
+    "gitlab-ci-bash-ls": {
+      "binary": {
+        "path": "/path/to/gitlab-ci-bash-ls",
+        "env": {
+          "BASH_LANGUAGE_SERVER_PATH": "/path/to/bash-language-server",
+          "YAML_LANGUAGE_SERVER_PATH": "/path/to/yaml-language-server"
+        }
+      }
+    }
+  }
+}
+```
+
+If you do not want it, disable it for the language:
+
+```json
+{
+  "languages": {
+    "Gitlab-CI": { "language_servers": ["gitlab-ci", "!gitlab-ci-bash-ls"] }
+  }
+}
+```
+
+Which keys are checked matches the highlighting above. A job's `before_script`
+and `script` form one document, because GitLab runs them in the same shell;
+`after_script` and `hooks:pre_get_sources_script` are separate documents.
+Nested command lists are flattened; `!reference` entries and aliases are skipped.
+
+Settings go under `lsp.gitlab-ci-bash-ls.settings`:
+
+```json
+{
+  "lsp": {
+    "gitlab-ci-bash-ls": {
+      "settings": {
+        "shell": "sh",
+        "bashIde": {
+          "shellcheckArguments": ["--exclude=SC2154,SC2034"]
+        }
+      }
+    }
+  }
+}
+```
+
+- `shell` sets the ShellCheck dialect (`sh`, `bash`, `dash`, `ksh`, ...). The
+  default is `bash`; set `sh` for Alpine/BusyBox images.
+- `bashIde` is passed to bash-language-server as its configuration. The proxy
+  defaults to `backgroundAnalysisMaxFiles: 0` and
+  `shellcheckArguments: ["--exclude=SC2154"]`, because CI variables are defined
+  by GitLab rather than in the script. Setting `shellcheckArguments` replaces
+  that default.
+- `yaml` is passed to yaml-language-server as its `yaml` configuration and wins
+  over everything else. By default, the proxy takes your settings for Zed's own
+  YAML server (`lsp.yaml-language-server.settings.yaml`, for example `format`),
+  pins the schema to GitLab's
+  [`ci.json`](https://gitlab.com/gitlab-org/gitlab/-/raw/master/app/assets/javascripts/editor/schema/ci.json)
+  (downloaded by yaml-language-server), and registers the `!reference` tag.
+  Override `yaml.schemas` to use a local or self-hosted schema.
+
+Limitations: quick fixes, formatting, rename and go-to-definition are not
+forwarded yet. Positions inside quoted or folded YAML scalars are mapped char by
+char and can be approximate for unusual escapes or line folding. Completion edits
+are inserted as-is, so inside a YAML-quoted command you may need to escape them.
+
 ## Testing
 
 The query tests use the same YAML grammar revision as `extension.toml`. With
@@ -74,7 +170,11 @@ python3 -m venv target/query-tests
 target/query-tests/bin/python -m pip install -r tests/requirements.txt
 target/query-tests/bin/python -m unittest discover -s tests
 cargo check --locked
+cargo test -p gitlab-ci-bash-ls
 ```
+
+The `gitlab-ci-bash-ls` end-to-end test runs only when `bash-language-server` and
+`shellcheck` are installed; otherwise it is skipped.
 
 On Windows, use `target/query-tests/Scripts/python.exe` instead. To verify the
 rendered result, install this repository using Zed's **Install Dev Extension**

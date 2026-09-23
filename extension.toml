@@ -13,6 +13,13 @@ languages = ["Gitlab-CI"]
 [language_servers.gitlab-ci.language_ids]
 "Gitlab-CI" = "yaml"
 
+[language_servers.gitlab-ci-bash-ls]
+name = "gitlab-ci-bash-ls"
+languages = ["Gitlab-CI"]
+
+[language_servers.gitlab-ci-bash-ls.language_ids]
+"Gitlab-CI" = "yaml"
+
 [grammars.yaml]
 repository = "https://github.com/zed-industries/tree-sitter-yaml"
 rev = "baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a"

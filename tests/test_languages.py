@@ -36,11 +36,13 @@ class GitlabCiLanguageTests(unittest.TestCase):
     def test_registration(self):
         config = tomllib.loads((LANGUAGE_DIR / "config.toml").read_text())
         manifest = tomllib.loads((ROOT / "extension.toml").read_text())
-        server = manifest["language_servers"]["gitlab-ci"]
         self.assertEqual(config["name"], "Gitlab-CI")
         self.assertEqual(config["path_suffixes"], [".gitlab-ci.yml", ".gitlab-ci.yaml"])
-        self.assertEqual(server["languages"], [config["name"]])
-        self.assertEqual(server["language_ids"][config["name"]], "yaml")
+        for name in ("gitlab-ci", "gitlab-ci-bash-ls"):
+            with self.subTest(server=name):
+                server = manifest["language_servers"][name]
+                self.assertEqual(server["languages"], [config["name"]])
+                self.assertEqual(server["language_ids"][config["name"]], "yaml")
         grammar = manifest["grammars"][config["grammar"]]
         requirements = (ROOT / "tests" / "requirements.txt").read_text()
         self.assertIn(grammar["repository"] + "@" + grammar["rev"], requirements)
