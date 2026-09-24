@@ -1,6 +1,6 @@
 id = "gitlab-ci-ls"
 name = "gitlab-ci-ls"
-version = "1.1.0"
+version = "2.0.0"
 schema_version = 1
 authors = ["Tom Zaspel <tom@zaspel.it>"]
 description = "GitLab CI language support with shell highlighting and gitlab-ci-ls"
