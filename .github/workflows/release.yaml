@@ -1,0 +1,261 @@
+---
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Retry with an existing tag as the ref; branch refs fail validation.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Match tag to both extension versions
+        id: version
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          if os.environ["GITHUB_REPOSITORY"] != "tzabbi/zed-gitlab-ci-ls":
+              raise SystemExit("::error::Releases must run in tzabbi/zed-gitlab-ci-ls")
+          if os.environ["GITHUB_REF_TYPE"] != "tag":
+              raise SystemExit("::error::Select an existing v* tag, not a branch")
+
+          # The proxy package version is independent of the installer's release tag.
+          cargo_version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
+          extension_version = tomllib.loads(Path("extension.toml").read_text())["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          if cargo_version != extension_version or tag != f"v{cargo_version}":
+              raise SystemExit(
+                  f"::error::Tag {tag!r} must equal v + both extension versions: "
+                  f"Cargo.toml={cargo_version!r}, extension.toml={extension_version!r}"
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"tag={tag}\n")
+          print(f"Validated {tag}")
+          PY
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            suffix: ""
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            suffix: ""
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            suffix: ""
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            suffix: ""
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            suffix: ".exe"
+    env:
+      TARGET: ${{ matrix.target }}
+      EXE_SUFFIX: ${{ matrix.suffix }}
+      ASSET_NAME: gitlab-ci-bash-ls-${{ matrix.target }}${{ matrix.suffix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust target
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add "$TARGET"
+      - name: Install native musl linker
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          {
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+            echo "RUSTFLAGS=-C target-feature=+crt-static"
+          } >> "$GITHUB_ENV"
+      # Unit tests need no external language servers; integration tests do.
+      - name: Test proxy
+        run: cargo test -p gitlab-ci-bash-ls --release --locked --target "$TARGET" --bin gitlab-ci-bash-ls
+      - name: Build proxy
+        run: cargo build -p gitlab-ci-bash-ls --release --locked --target "$TARGET"
+      - name: Verify Linux binary is static
+        if: runner.os == 'Linux'
+        run: |
+          binary="target/$TARGET/release/gitlab-ci-bash-ls"
+          readelf --program-headers "$binary" > "$RUNNER_TEMP/program-headers.txt"
+          readelf --dynamic "$binary" > "$RUNNER_TEMP/dynamic-section.txt"
+          if grep -q INTERP "$RUNNER_TEMP/program-headers.txt" ||
+             grep -q '(NEEDED)' "$RUNNER_TEMP/dynamic-section.txt"; then
+            echo "::error::Linux release binary must not require a dynamic loader or shared libraries"
+            exit 1
+          fi
+      - name: Stage raw executable and smoke test
+        run: |
+          mkdir -p dist
+          cp "target/$TARGET/release/gitlab-ci-bash-ls$EXE_SUFFIX" "dist/$ASSET_NAME"
+          "dist/$ASSET_NAME" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET_NAME }}
+          path: dist/${{ env.ASSET_NAME }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish all five binaries
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: tzabbi/zed-gitlab-ci-ls
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gitlab-ci-bash-ls-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify complete raw asset set
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          expected = {
+              "gitlab-ci-bash-ls-x86_64-unknown-linux-musl",
+              "gitlab-ci-bash-ls-aarch64-unknown-linux-musl",
+              "gitlab-ci-bash-ls-x86_64-apple-darwin",
+              "gitlab-ci-bash-ls-aarch64-apple-darwin",
+              "gitlab-ci-bash-ls-x86_64-pc-windows-msvc.exe",
+          }
+          assets = list(Path("release-assets").iterdir())
+          actual = {asset.name for asset in assets}
+          if actual != expected:
+              raise SystemExit(
+                  f"::error::Missing assets: {expected - actual}; unexpected assets: {actual - expected}"
+              )
+          for asset in assets:
+              if not asset.is_file() or asset.stat().st_size == 0:
+                  raise SystemExit(f"::error::Not a nonempty raw executable: {asset}")
+              # Artifact downloads do not preserve Unix executable permissions.
+              asset.chmod(0o755)
+          PY
+      - name: Publish draft or verify existing published release
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          paths = sorted(Path("release-assets").iterdir())
+
+          def gh(*args):
+              return subprocess.check_output(["gh", *args], text=True)
+
+          # Resolve by ID: the REST tag endpoint does not find draft releases.
+          lookup = ["release", "view", tag, "--json", "databaseId", "--jq", ".databaseId"]
+          result = subprocess.run(["gh", *lookup], capture_output=True, text=True)
+          if result.returncode:
+              # An authentication/network failure is not evidence of an absent release.
+              if result.returncode != 1 or result.stderr.strip() != "release not found":
+                  raise SystemExit(f"::error::Cannot look up release: {result.stderr.strip()}")
+              gh("release", "create", tag, "--verify-tag", "--draft",
+                 "--title", tag, "--generate-notes")
+              release_id = int(gh(*lookup).strip())
+          else:
+              release_id = int(result.stdout.strip())
+          endpoint = f"repos/{os.environ['GH_REPO']}/releases/{release_id}"
+
+          def read_release():
+              release = json.loads(gh("api", endpoint))
+              if not isinstance(release.get("draft"), bool):
+                  raise SystemExit("::error::Cannot determine whether the release is a draft")
+              return release
+
+          release = read_release()
+          if release["draft"]:
+              # Only drafts may replace partial uploads. Public assets are pinned by tag.
+              gh("release", "upload", tag, *(str(path) for path in paths), "--clobber")
+              release = read_release()
+
+          uploaded = {asset["name"]: asset for asset in release["assets"]}
+          for path in paths:
+              asset = uploaded.get(path.name, {})
+              digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+              if (asset.get("state") != "uploaded"
+                      or asset.get("size") != path.stat().st_size
+                      or asset.get("digest") != digest):
+                  if release["draft"]:
+                      advice = "The draft remains unpublished; fix the upload and retry."
+                  else:
+                      advice = (
+                          "Published assets will not be replaced. Rebuilt bytes may differ "
+                          "between runs. Bump both extension versions and use a new version/tag."
+                      )
+                  raise SystemExit(
+                      f"::error::Release asset verification failed: {path.name}. {advice}"
+                  )
+
+          if release["draft"]:
+              gh("release", "edit", tag, "--draft=false")
+          else:
+              print(f"Reusing verified published release {tag}; no assets or release metadata changed.")
+          PY
+
+  homebrew:
+    name: Release Zed Extension
+    needs: [validate, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: huacnlee/zed-extension-action@v2
+        with:
+          extension-name: gitlab-ci-ls
+          push-to: tzabbi/extensions
+          tag: ${{ needs.validate.outputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # the personal access token should have "repo" & "workflow" scopes
+          COMMITTER_TOKEN: ${{ secrets.COMMITTER_TOKEN }}

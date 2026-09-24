@@ -1,0 +1,11 @@
+[package]
+name = "gitlab-ci-bash-ls"
+version = "0.1.0"
+edition = "2024"
+description = "Language server proxy that forwards GitLab CI scripts to bash-language-server"
+license = "MIT"
+repository = "https://github.com/tzabbi/zed-gitlab-ci-ls"
+
+[dependencies]
+serde_json = "1"
+yaml-rust2 = { version = "0.13.0", default-features = false }

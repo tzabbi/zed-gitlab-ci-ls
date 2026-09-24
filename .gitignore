@@ -1,1 +1,6 @@
 target/
+__pycache__/
+
+# Built by Zed's "Install Dev Extension" / "Rebuild Dev Extension"
+extension.wasm
+grammars/

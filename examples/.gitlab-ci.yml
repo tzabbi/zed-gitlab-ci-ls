@@ -1,0 +1,79 @@
+stages:
+  - lint
+  - build
+  - test
+  - deploy
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+default:
+  image: node:22
+  before_script:
+    - node --version
+    - npm --version
+
+variables:
+  PACKAGE_DIR: dist
+
+.base:
+  cache:
+    key: $CI_COMMIT_REF_SLUG
+    paths:
+      - node_modules/
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+lint:
+  extends: .base
+  stage: lint
+  script:
+    - npm ci
+    - npm run lint
+
+build:
+  extends: .base
+  stage: build
+  script:
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+
+test:
+  extends: .base
+  stage: test
+  needs:
+    - build
+  script:
+    - npm test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+deploy:
+  stage: deploy
+
+  needs:
+    - job: build
+
+      artifacts: true
+  environment:
+    name: production
+    url: https://example.com
+  script:
+    - echo "Deploying ${PACKAGE_DIR}"
+    - |
+      echo "jojo"
+      echo $HI
+  after_script:
+    - echo "Hallo"
+  before_script:
+    - echo "jojo"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

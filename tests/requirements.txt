@@ -1,0 +1,3 @@
+tree-sitter==0.25.2
+tree-sitter-yaml @ git+https://github.com/zed-industries/tree-sitter-yaml@baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a
+tree-sitter-bash==0.25.1
