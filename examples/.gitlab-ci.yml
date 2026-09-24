@@ -74,6 +74,6 @@ deploy:
   after_script:
     - echo "Hallo"
   before_script:
-    - echo "jojo
+    - echo "jojo"
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
