@@ -5,7 +5,8 @@ GitLab CI language support for Zed, using the
 
 ## Features
 
-- Detects `.gitlab-ci.yml` and `.gitlab-ci.yaml` as **Gitlab-CI**.
+- Detects `.gitlab-ci.yml` and `.gitlab-ci.yaml`, as well as files ending in
+  `.gitlab-ci.yml` or `.gitlab-ci.yaml` (e.g. `build.gitlab-ci.yml`), as **Gitlab-CI**.
 - Retains YAML highlighting, bracket matching, comments, indentation, and outline.
 - Injects Bash highlighting into `script`, `before_script`, `after_script`, and
   `pre_get_sources_script`, including global, default, hidden-job, and hook entries.

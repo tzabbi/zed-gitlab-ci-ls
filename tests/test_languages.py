@@ -37,7 +37,7 @@ class GitlabCiLanguageTests(unittest.TestCase):
         config = tomllib.loads((LANGUAGE_DIR / "config.toml").read_text())
         manifest = tomllib.loads((ROOT / "extension.toml").read_text())
         self.assertEqual(config["name"], "Gitlab-CI")
-        self.assertEqual(config["path_suffixes"], [".gitlab-ci.yml", ".gitlab-ci.yaml"])
+        self.assertEqual(config["path_suffixes"], ["gitlab-ci.yml", "gitlab-ci.yaml"])
         for name in ("gitlab-ci", "gitlab-ci-bash-ls"):
             with self.subTest(server=name):
                 server = manifest["language_servers"][name]
