@@ -28,6 +28,35 @@ build:
   after_script: echo "Finished"
 ```
 
+### Indentation and script completion
+
+Enter after `script:`, `- |`, or `- >` increases indentation by one level
+(two spaces by default). Block modifiers such as `|-`, `>+`, and `|2-`, and
+trailing header comments, are recognized too. Empty block scalars stay in YAML
+until they contain a command, so Bash's indentation settings do not take over
+while you create the block.
+
+When confirming `script`, `before_script`, or `after_script` completion with
+Enter or Tab, `gitlab-ci-bash-ls` inserts a key and an indented first list item:
+
+```yaml
+test:
+  after_script:
+    -  # cursor starts here
+```
+
+The completion also handles an unindented partial key **immediately after an
+empty job header** (for example `test:\naft`). It does not reparent global hooks
+after a completed job, blank separator, or comment, or rewrite existing values.
+Existing job indentation wins; for an empty job the proxy uses `yaml.indentation`
+if configured, otherwise the file's indentation or two spaces. `default` offers
+only `before_script` and `after_script`, not `script`.
+
+Once a block contains shell code, Zed can use **Shell Script** settings inside
+that injection, including when editing its header. For consistent two-space
+indentation there too, set `languages."Shell Script".tab_size` to `2` in Zed's
+project settings. This also affects standalone shell files in that project.
+
 ### Highlighting limitations
 
 Zed injects the raw YAML scalar text. Its YAML grammar does not expose separate
@@ -157,9 +186,11 @@ Settings go under `lsp.gitlab-ci-bash-ls.settings`:
   Override `yaml.schemas` to use a local or self-hosted schema.
 
 Limitations: quick fixes, formatting, rename and go-to-definition are not
-forwarded yet. Positions inside quoted or folded YAML scalars are mapped char by
-char and can be approximate for unusual escapes or line folding. Completion edits
-are inserted as-is, so inside a YAML-quoted command you may need to escape them.
+forwarded yet. Source ranges include complete YAML escapes and doubled quotes;
+positions inside an escape are not treated as editable decoded-character boundaries.
+Unusual scalar folding can still produce approximate source positions. Shell
+completion replacement text is inserted as-is, so inside a YAML-quoted command
+you may need to escape newly inserted quotes or backslashes.
 
 ## Testing
 
@@ -174,8 +205,17 @@ cargo check --locked
 cargo test -p gitlab-ci-bash-ls
 ```
 
-The `gitlab-ci-bash-ls` end-to-end test runs only when `bash-language-server` and
-`shellcheck` are installed; otherwise it is skipped.
+The `gitlab-ci-bash-ls` end-to-end tests run only when `bash-language-server`,
+`yaml-language-server`, and `shellcheck` are installed; otherwise they are skipped.
+They exercise snippet and plain-text completion, indentation, resolve, and escaped
+source ranges against real backends using an offline schema. The Python tests
+check indentation regexes and syntax captures, not Zed's actual cursor movement.
+
+After changing the proxy, reinstall it with `cargo install --locked --path
+gitlab-ci-bash-ls`, rebuild the dev extension in Zed, and restart its language
+servers. Manually check Enter/Tab completion beneath an empty job, Enter after
+`- |` and `- >` (also before existing blank lines), and shell highlighting after
+adding the first command.
 
 On Windows, use `target/query-tests/Scripts/python.exe` instead. To verify the
 rendered result, install this repository using Zed's **Install Dev Extension**

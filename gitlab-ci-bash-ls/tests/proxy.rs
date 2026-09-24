@@ -33,12 +33,26 @@ hallo:
 /// A tiny stand-in for GitLab's CI schema, so the test runs offline.
 const SCHEMA: &str = r#"{
   "type": "object",
-  "properties": { "stages": { "type": "array" } },
+  "properties": {
+    "stages": { "type": "array" },
+    "before_script": { "type": ["string", "array"] },
+    "after_script": { "type": ["string", "array"] },
+    "default": {
+      "type": ["object", "null", "string"],
+      "properties": {
+        "before_script": { "type": ["string", "array"] },
+        "after_script": { "type": ["string", "array"] }
+      },
+      "additionalProperties": false
+    }
+  },
   "additionalProperties": {
     "type": ["object", "null", "string"],
     "properties": {
       "stage": { "type": "string", "description": "Job stage" },
-      "script": { "type": ["string", "array"] }
+      "script": { "type": ["string", "array"] },
+      "before_script": { "type": ["string", "array"] },
+      "after_script": { "type": ["string", "array"] }
     }
   }
 }"#;
@@ -113,8 +127,288 @@ fn labels(response: &Value) -> Vec<String> {
         .collect()
 }
 
+fn request(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<Value>,
+    next_id: &mut i64,
+    method: &str,
+    params: Value,
+) -> Value {
+    let id = *next_id;
+    *next_id += 1;
+    send(
+        stdin,
+        json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
+    );
+    let result = response(rx, id);
+    assert!(result.get("error").is_none(), "{method}: {result:#}");
+    result
+}
+
+fn change_and_complete(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<Value>,
+    next_id: &mut i64,
+    text: &str,
+    position: Value,
+) -> Value {
+    send(
+        stdin,
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": URI, "version": *next_id },
+                "contentChanges": [{ "text": text }],
+            },
+        }),
+    );
+    // Requests follow didChange on the same stream; no diagnostic timer or sleep is needed.
+    request(
+        stdin,
+        rx,
+        next_id,
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": URI }, "position": position }),
+    )
+}
+
+fn end_position(text: &str) -> Value {
+    let line = text.split('\n').count() - 1;
+    let character = text.rsplit('\n').next().unwrap().encode_utf16().count();
+    json!({ "line": line, "character": character })
+}
+
+fn unique_item<'a>(response: &'a Value, label: &str) -> &'a Value {
+    let result = &response["result"];
+    let items = result.as_array().or_else(|| result["items"].as_array());
+    let matching: Vec<_> = items
+        .into_iter()
+        .flatten()
+        .filter(|item| item["label"] == label)
+        .collect();
+    assert_eq!(matching.len(), 1, "expected one {label}: {response:#}");
+    matching[0]
+}
+
+fn apply_text_edit(text: &str, item: &Value) -> String {
+    let offset = |position: &Value| {
+        let line = position["line"].as_u64().unwrap() as usize;
+        let character = position["character"].as_u64().unwrap() as usize;
+        let start: usize = text.split_inclusive('\n').take(line).map(str::len).sum();
+        let mut utf16 = 0;
+        for (byte, ch) in text[start..].char_indices() {
+            if utf16 == character {
+                return start + byte;
+            }
+            assert_ne!(ch, '\n', "position past end of line: {position}");
+            utf16 += ch.len_utf16();
+        }
+        assert_eq!(utf16, character, "invalid UTF-16 position: {position}");
+        text.len()
+    };
+    let edit = &item["textEdit"];
+    let mut edited = text.to_owned();
+    edited.replace_range(
+        offset(&edit["range"]["start"])..offset(&edit["range"]["end"]),
+        edit["newText"].as_str().expect("completion textEdit"),
+    );
+    edited
+}
+
+fn assert_scaffold(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<Value>,
+    next_id: &mut i64,
+    text: &str,
+    label: &str,
+    indent: &str,
+    snippets: bool,
+) {
+    let position = end_position(text);
+    let result = change_and_complete(stdin, rx, next_id, text, position.clone());
+    let item = unique_item(&result, label);
+    let new_text = format!(
+        "{indent}{label}:\n{indent}{indent}- {}",
+        if snippets { "$0" } else { "" }
+    );
+    assert_eq!(
+        item["textEdit"],
+        json!({
+            "range": { "start": { "line": position["line"], "character": 0 }, "end": position },
+            "newText": new_text,
+        }),
+        "{text:?}: {item:#}"
+    );
+    if snippets {
+        assert_eq!(item["insertTextFormat"], 2, "{item:#}");
+    } else {
+        assert!(
+            item.get("insertTextFormat").is_none() || item["insertTextFormat"] == 1,
+            "plain-text client received a snippet: {item:#}"
+        );
+    }
+    assert_eq!(item["data"]["gitlabCiYaml"], true, "{item:#}");
+    let resolved = request(stdin, rx, next_id, "completionItem/resolve", item.clone());
+    assert_eq!(
+        resolved["result"], *item,
+        "YAML resolve must preserve the edit"
+    );
+
+    let edited = apply_text_edit(text, &resolved["result"]);
+    let prefix = &text[..text.rfind('\n').unwrap() + 1];
+    assert_eq!(edited, format!("{prefix}{new_text}"));
+    // Simulate typing a command at the snippet's final cursor (or the plain-text end).
+    let completed = if snippets {
+        edited.replace("$0", "echo done")
+    } else {
+        format!("{edited}echo done")
+    };
+    let documents = yaml_rust2::YamlLoader::load_from_str(&completed).expect("valid scaffold YAML");
+    let owner = prefix
+        .lines()
+        .find(|line| *line == "test:" || *line == "default:")
+        .unwrap();
+    assert_eq!(
+        documents[0][owner.trim_end_matches(':')][label][0].as_str(),
+        Some("echo done"),
+        "scaffold must remain a direct child: {completed}"
+    );
+}
+
+fn configure_yaml(stdin: &mut ChildStdin, schema_uri: &str, mut yaml: Value) {
+    yaml["schemas"] = json!({ schema_uri: ["*"] });
+    yaml["schemaStore"] = json!({ "enable": false });
+    send(
+        stdin,
+        json!({
+            "jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
+            "params": { "settings": { "yaml": yaml } },
+        }),
+    );
+}
+
+fn script_key_regressions(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<Value>,
+    next_id: &mut i64,
+    schema_uri: &str,
+    snippets: bool,
+) {
+    for (text, label) in [
+        ("test:\naft", "after_script"),
+        ("test:\nbef", "before_script"),
+        ("test:\nscr", "script"),
+        ("test:\n  aft", "after_script"),
+        ("test:\n  bef", "before_script"),
+        ("test:\n  scr", "script"),
+        ("test:\n  stage: test\n  scr", "script"),
+        ("default:\naft", "after_script"),
+        ("default:\nbef", "before_script"),
+        ("default:\n  aft", "after_script"),
+        ("default:\n  bef", "before_script"),
+    ] {
+        assert_scaffold(stdin, rx, next_id, text, label, "  ", snippets);
+    }
+
+    // Local script items replace, rather than duplicate, the schema's items; other keys survive.
+    let text = "test:\n  s";
+    let result = change_and_complete(stdin, rx, next_id, text, end_position(text));
+    unique_item(&result, "script");
+    unique_item(&result, "stage");
+
+    for text in ["default:\nscr", "default:\n  s"] {
+        let result = change_and_complete(stdin, rx, next_id, text, end_position(text));
+        assert!(
+            !labels(&result).iter().any(|label| label == "script"),
+            "{result:#}"
+        );
+    }
+
+    // Global hooks stay at column zero, even when the preceding job has a script.
+    for (text, label) in [
+        ("aft", "after_script"),
+        ("stages: [test]\nbef", "before_script"),
+        ("test:\n\naft", "after_script"),
+        ("test:\n# Global hook\nbef", "before_script"),
+        ("test:\n  script:\n    - echo done\naft", "after_script"),
+        ("test:\n  script:\n    - echo done\nbef", "before_script"),
+    ] {
+        let result = change_and_complete(stdin, rx, next_id, text, end_position(text));
+        let item = unique_item(&result, label);
+        let resolved = request(stdin, rx, next_id, "completionItem/resolve", item.clone());
+        assert_eq!(resolved["result"], *item);
+        let edited = apply_text_edit(text, &resolved["result"]);
+        let prefix = &text[..text.rfind('\n').map_or(0, |index| index + 1)];
+        assert!(
+            edited.starts_with(&format!("{prefix}{label}:")),
+            "global hook was reparented: {edited:?} ({item:#})"
+        );
+    }
+
+    let inferred = "existing:\n    script:\n        - echo done\ntest:\naft";
+    assert_scaffold(
+        stdin,
+        rx,
+        next_id,
+        inferred,
+        "after_script",
+        "    ",
+        snippets,
+    );
+
+    // Explicit indentation overrides the existing job's two-space indentation.
+    configure_yaml(stdin, schema_uri, json!({ "indentation": "    " }));
+    let explicit = "existing:\n  script:\n    - echo done\ntest:\naft";
+    assert_scaffold(
+        stdin,
+        rx,
+        next_id,
+        explicit,
+        "after_script",
+        "    ",
+        snippets,
+    );
+    assert_scaffold(
+        stdin,
+        rx,
+        next_id,
+        "test:\n    scr",
+        "script",
+        "    ",
+        snippets,
+    );
+
+    configure_yaml(stdin, schema_uri, json!({ "completion": false }));
+    for text in ["test:\naft", "test:\n  scr", "default:\n  bef", "aft"] {
+        let result = change_and_complete(stdin, rx, next_id, text, end_position(text));
+        assert!(
+            labels(&result).is_empty(),
+            "disabled YAML completion: {result:#}"
+        );
+    }
+    configure_yaml(stdin, schema_uri, json!({}));
+    assert_scaffold(
+        stdin,
+        rx,
+        next_id,
+        "test:\naft",
+        "after_script",
+        "  ",
+        snippets,
+    );
+}
+
 #[test]
 fn forwards_scripts_to_bash_and_the_file_to_yaml() {
+    run_proxy(true);
+}
+
+#[test]
+fn forwards_scripts_to_bash_and_the_file_to_yaml_without_snippets() {
+    run_proxy(false);
+}
+
+fn run_proxy(snippets: bool) {
     let backends = ["bash-language-server", "shellcheck", "yaml-language-server"];
     if let Some(missing) = backends.iter().find(|program| !on_path(program)) {
         eprintln!("skipping: {missing} is not installed");
@@ -122,7 +416,7 @@ fn forwards_scripts_to_bash_and_the_file_to_yaml() {
     }
 
     let schema = std::env::temp_dir().join(format!(
-        "gitlab-ci-bash-ls-schema-{}.json",
+        "gitlab-ci-bash-ls-schema-{}-{snippets}.json",
         std::process::id()
     ));
     std::fs::write(&schema, SCHEMA).unwrap();
@@ -146,8 +440,10 @@ fn forwards_scripts_to_bash_and_the_file_to_yaml() {
             "params": {
                 "processId": null,
                 "rootUri": null,
-                "capabilities": {},
-                "initializationOptions": { "yaml": { "schemas": { schema_uri: ["*"] } } },
+                "capabilities": {
+                    "textDocument": { "completion": { "completionItem": { "snippetSupport": snippets } } },
+                },
+                "initializationOptions": { "yaml": { "schemas": { schema_uri.as_str(): ["*"] } } },
             },
         }),
     );
@@ -241,11 +537,21 @@ fn forwards_scripts_to_bash_and_the_file_to_yaml() {
         "YAML keys in a script: {commands:?}"
     );
 
-    send(
-        &mut stdin,
-        json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
-    );
-    response(&rx, 5);
+    let mut next_id = 5;
+    // The real Bash backend deterministically completes a variable defined in the same script.
+    // The cursor is after a YAML escape, before the closing quote, in source UTF-16 units.
+    for escape in ["\\x45", "\\u0045", "\\U00000045"] {
+        let text =
+            format!("test:\n  script:\n    - export GREETING=hi\n    - \"echo $GRE{escape}\"");
+        let mut position = end_position(&text);
+        position["character"] = json!(position["character"].as_u64().unwrap() - 1);
+        let result = change_and_complete(&mut stdin, &rx, &mut next_id, &text, position);
+        let item = unique_item(&result, "GREETING");
+        assert!(item["data"].get("gitlabCiYaml").is_none(), "{result:#}");
+    }
+
+    script_key_regressions(&mut stdin, &rx, &mut next_id, &schema_uri, snippets);
+    request(&mut stdin, &rx, &mut next_id, "shutdown", Value::Null);
     send(&mut stdin, json!({ "jsonrpc": "2.0", "method": "exit" }));
     assert!(child.wait().unwrap().success());
     let _ = std::fs::remove_file(schema);

@@ -6,6 +6,7 @@
 //! - yaml-language-server: the YAML file itself is forwarded unchanged, with
 //!   GitLab's CI JSON schema, for key completion, hover and validation.
 
+mod completion;
 mod extract;
 mod rpc;
 
@@ -88,7 +89,7 @@ enum Pending {
     Initialize,
     Shutdown,
     Hover(Value, Target),
-    Completion(Value, Target),
+    Completion(Value, Target, Vec<Value>),
     Resolve(Value),
 }
 
@@ -202,6 +203,7 @@ struct Proxy {
     shutdown_requested: bool,
     documents: HashMap<String, Document>,
     settings: Settings,
+    snippets: bool,
 }
 
 fn main() {
@@ -232,6 +234,7 @@ fn main() {
         shutdown_requested: false,
         documents: HashMap::new(),
         settings: Settings::from_value(None),
+        snippets: false,
     };
     for message in rx {
         match message {
@@ -285,7 +288,21 @@ impl Proxy {
             }
             "textDocument/hover" => self.forward_positional(method, id, params, Pending::Hover),
             "textDocument/completion" => {
-                self.forward_positional(method, id, params, Pending::Completion)
+                let extra = params["textDocument"]["uri"]
+                    .as_str()
+                    .and_then(|uri| self.documents.get(uri))
+                    .map(|document| {
+                        completion::script_items(
+                            &document.text,
+                            &params["position"],
+                            &self.settings.yaml,
+                            self.snippets,
+                        )
+                    })
+                    .unwrap_or_default();
+                self.forward_positional(method, id, params, |id, target| {
+                    Pending::Completion(id, target, extra)
+                })
             }
             "completionItem/resolve" => {
                 let from_yaml = params
@@ -351,7 +368,7 @@ impl Proxy {
                 let pending = self.pending.iter().find_map(|(id, (backend, pending))| {
                     let client_id = match pending {
                         Pending::Hover(client_id, _)
-                        | Pending::Completion(client_id, _)
+                        | Pending::Completion(client_id, _, _)
                         | Pending::Resolve(client_id) => client_id,
                         Pending::Initialize | Pending::Shutdown => return None,
                     };
@@ -367,6 +384,10 @@ impl Proxy {
 
     fn initialize(&mut self, id: Value, params: &Value) {
         self.settings = Settings::from_value(params.get("initializationOptions"));
+        self.snippets = params
+            .pointer("/capabilities/textDocument/completion/completionItem/snippetSupport")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let mut started = 0;
         for backend in Backend::ALL {
@@ -461,7 +482,7 @@ impl Proxy {
         method: &str,
         id: Value,
         mut params: Value,
-        pending: fn(Value, Target) -> Pending,
+        pending: impl FnOnce(Value, Target) -> Pending,
     ) {
         let Some(uri) = params["textDocument"]["uri"].as_str().map(str::to_owned) else {
             self.respond(id, Value::Null);
@@ -486,6 +507,11 @@ impl Proxy {
                     params,
                     pending(id, Target::Script(virtual_uri)),
                 );
+            }
+            None if method == "textDocument/completion"
+                && self.settings.yaml.get("completion") == Some(&json!(false)) =>
+            {
+                self.respond(id, Value::Null);
             }
             None if self.ready(Backend::Yaml) && self.documents.contains_key(&uri) => {
                 self.request(Backend::Yaml, method, params, pending(id, Target::Yaml));
@@ -800,8 +826,11 @@ impl Proxy {
                 let result = self.map_hover(result, &virtual_uri);
                 self.respond_with(id, result, error);
             }
-            Pending::Completion(id, target) => {
-                let result = self.map_completion(result, &target);
+            Pending::Completion(id, target, extra) => {
+                let mut result = self.map_completion(result, &target);
+                if matches!(target, Target::Yaml) && error.is_none() {
+                    result = completion::merge(result, extra);
+                }
                 self.respond_with(id, result, error);
             }
         }

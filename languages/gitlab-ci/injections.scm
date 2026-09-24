@@ -1,6 +1,7 @@
 ; The document -> node -> mapping -> pair structure also matches flow mappings.
 ; Tags are checked as syntax nodes, so anchors and comments cannot hide !reference.
 ; Zed injects whole scalars: quotes and block headers cannot be trimmed here.
+; Keep empty block scalars in YAML so Enter uses its indent width, not Bash's.
 
 ; Global before_script and after_script.
 ((document
@@ -41,6 +42,7 @@
     "\"before_script\"" "\"after_script\"")
   (#not-eq? @_tag "!reference")
   (#not-eq? @_item_tag "!reference")
+  (#not-match? @injection.content "^[|>][^\r\n]*(\r?\n[ \t]*)*$")
   (#set! injection.language "bash"))
 
 ; Direct job/default properties, excluding reserved root metadata as job names.
@@ -89,6 +91,7 @@
     "\"script\"" "\"before_script\"" "\"after_script\"" "\"pre_get_sources_script\"")
   (#not-eq? @_tag "!reference")
   (#not-eq? @_item_tag "!reference")
+  (#not-match? @injection.content "^[|>][^\r\n]*(\r?\n[ \t]*)*$")
   (#set! injection.language "bash"))
 
 ; Only a direct hooks property of a job/default can introduce hook commands.
@@ -139,4 +142,5 @@
   (#any-of? @_script "pre_get_sources_script" "'pre_get_sources_script'" "\"pre_get_sources_script\"")
   (#not-eq? @_tag "!reference")
   (#not-eq? @_item_tag "!reference")
+  (#not-match? @injection.content "^[|>][^\r\n]*(\r?\n[ \t]*)*$")
   (#set! injection.language "bash"))

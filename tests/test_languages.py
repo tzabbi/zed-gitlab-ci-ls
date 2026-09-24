@@ -1,5 +1,6 @@
 """Exercise the query captures Zed uses, without unsupported offset directives."""
 
+import re
 import unittest
 from pathlib import Path
 
@@ -47,6 +48,40 @@ class GitlabCiLanguageTests(unittest.TestCase):
         requirements = (ROOT / "tests" / "requirements.txt").read_text()
         self.assertIn(grammar["repository"] + "@" + grammar["rev"], requirements)
 
+    def test_indentation_after_mapping_and_sequence_headers(self):
+        config = tomllib.loads((LANGUAGE_DIR / "config.toml").read_text())
+        pattern = re.compile(config["increase_indent_pattern"])
+        for line in ("test:", "  after_script:", "  - if:"):
+            for comment in ("", " # comment"):
+                with self.subTest(line=line, comment=comment):
+                    self.assertIsNotNone(pattern.search(line + comment))
+        for header in ("|", ">", "|-", "|+", "|2", "|2-", "|-2", ">+", ">2-", ">+2"):
+            for prefix in ("  script: ", "    - "):
+                for comment in ("", " # comment"):
+                    with self.subTest(header=header, prefix=prefix, comment=comment):
+                        self.assertIsNotNone(pattern.search(prefix + header + comment))
+        self.assertEqual(config["tab_size"], 2)
+
+    def test_indentation_does_not_increase_after_commands_or_comments(self):
+        config = tomllib.loads((LANGUAGE_DIR / "config.toml").read_text())
+        pattern = re.compile(config["increase_indent_pattern"])
+        for line in (
+            "",
+            "    ",
+            "# job:",
+            "  # - |",
+            "    - echo hello",
+            "  script: echo hello",
+            "    - echo hi |",
+            "    - echo hi > output",
+            "    - |0",
+            "    - >22",
+            "    - |-+",
+            "  script: | trailing text",
+        ):
+            with self.subTest(line=line):
+                self.assertIsNone(pattern.search(line))
+
     def test_all_queries_compile(self):
         for path in LANGUAGE_DIR.glob("*.scm"):
             with self.subTest(query=path.name):
@@ -93,6 +128,23 @@ class GitlabCiLanguageTests(unittest.TestCase):
                         self.assertTrue(captures[0].startswith(header))
                         self.assertIn("echo first", captures[0])
                         self.assertIn("echo second", captures[0])
+
+    def test_empty_block_headers_keep_yaml_indentation(self):
+        for header in ("|", ">", "|-", ">+", "|2-", ">-2"):
+            for prefix in (
+                "before_script: ",
+                "after_script:\n  - ",
+                "job:\n  script: ",
+                "job:\n  script:\n    - ",
+                "default:\n  hooks:\n    pre_get_sources_script:\n      - ",
+            ):
+                for ending in ("", "\n", "\n\n", " # comment\n\n"):
+                    with self.subTest(header=header, prefix=prefix, ending=ending):
+                        self.assertEqual(self.contents(prefix + header + ending), [])
+        # Nonempty siblings must still get Bash, even with empty scalars beside them.
+        source = "job:\n  script:\n    - |\n    - echo keep\n    - >\n"
+        self.assertEqual(self.contents(source), ["echo keep"])
+        self.assertEqual(self.contents(source.replace("\n", "\r\n")), ["echo keep"])
 
     def test_global_default_and_hook_scripts(self):
         source = """before_script: echo global
