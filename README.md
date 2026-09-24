@@ -3,6 +3,9 @@
 GitLab CI language support for Zed, using the
 [gitlab-ci-ls](https://github.com/alesbrelih/gitlab-ci-ls) language server.
 
+Upgrading from 1.x? Read the [migration guide](#migrating-from-1x-to-20).
+See [CHANGELOG.md](CHANGELOG.md) for the changes in 2.0.0.
+
 ## Features
 
 - Detects `.gitlab-ci.yml` and `.gitlab-ci.yaml`, as well as files ending in
@@ -73,15 +76,185 @@ are not combined. Nested command arrays are not traversed, and aliases and
 `!reference` values are not expanded. Bash highlighting also does not model
 PowerShell or Windows batch runners.
 
+## Migrating from 1.x to 2.0
+
+Version 2.0 introduces a dedicated **Gitlab-CI** language. This changes which
+editor settings and language servers apply to CI files. The extension does not
+rewrite existing pipeline files, and upgrading alone does not change their
+execution in GitLab.
+
+Merge the examples below into your existing user or project settings; do not
+replace your entire configuration.
+
+### 1. Check file associations
+
+Open a CI file and confirm that Zed's language selector shows **Gitlab-CI**.
+`.gitlab-ci.yml`, `.gitlab-ci.yaml`, and names such as `build.gitlab-ci.yml` are
+detected automatically.
+
+Remove CI-specific patterns from custom `file_types.YAML` associations that force
+these files to remain YAML. Do not remove YAML associations for unrelated files.
+For included CI files with other names, add an explicit association, for example:
+
+```json
+{
+  "file_types": {
+    "Gitlab-CI": [".gitlab/ci/**/*.yml", ".gitlab/ci/**/*.yaml"]
+  }
+}
+```
+
+Scope these patterns to CI configuration, not all YAML files. Keeping a CI file
+as **YAML** retains the ordinary YAML tooling, but the extension's `gitlab-ci`
+server no longer attaches to it automatically.
+
+### 2. Copy relevant language settings
+
+CI-specific editor settings previously placed under `languages.YAML` belong under
+`languages."Gitlab-CI"` now. Copy settings such as indentation, formatting choices,
+and language-server selection; retain the original YAML settings if other files
+still need them.
+
+For example, to use two-space indentation:
+
+```json
+{
+  "languages": {
+    "Gitlab-CI": {
+      "tab_size": 2
+    }
+  }
+}
+```
+
+The server IDs remain `gitlab-ci` for the original server and
+`gitlab-ci-bash-ls` for the new proxy. Do not rename server-specific `lsp` settings
+to `Gitlab-CI`; that is the language name, not a server ID. The LSP language ID
+sent to the servers remains `yaml`.
+
+### 3. Install the proxy or explicitly disable it
+
+Keep the existing `gitlab-ci-ls` executable on Zed's `PATH`. It still supplies
+GitLab-specific completion for values such as stages, `extends`, and `needs`.
+
+The new `gitlab-ci-bash-ls` proxy is optional, but registered by default. It is
+**not installed automatically**. Choose one of the following setups.
+
+**Full YAML/Bash support:** install the proxy and the desired backend tools:
+
+```sh
+npm install -g bash-language-server yaml-language-server
+# Install ShellCheck with your system package manager, e.g. brew install shellcheck.
+# From a checkout of this repository (requires Rust/Cargo):
+cargo install --locked --path gitlab-ci-bash-ls
+```
+
+If you already restrict `language_servers` for the language, include both servers:
+
+```json
+{
+  "languages": {
+    "Gitlab-CI": {
+      "language_servers": ["gitlab-ci", "gitlab-ci-bash-ls"]
+    }
+  }
+}
+```
+
+Preserve any additional servers you intentionally use. The proxy can operate
+with just one backend; missing backends produce a warning. Without ShellCheck,
+its diagnostics are unavailable. See [proxy setup](#shell-scripts-and-schema-completion-gitlab-ci-bash-ls)
+for binary path overrides and settings.
+
+**Original GitLab server only:** explicitly disable the proxy:
+
+```json
+{
+  "languages": {
+    "Gitlab-CI": {
+      "language_servers": ["gitlab-ci", "!gitlab-ci-bash-ls"]
+    }
+  }
+}
+```
+
+This keeps syntax highlighting and the original server without requiring the
+proxy. It does **not** restore Zed's normal YAML server for this language: the
+proxy's schema completion/validation, script scaffolds, and Bash/ShellCheck
+features will be unavailable.
+
+### 4. Review schemas and formatting
+
+Zed's normal YAML server no longer automatically attaches to these files. The
+proxy inherits `lsp.yaml-language-server.settings.yaml`, but overrides schema
+selection with GitLab's CI schema and disables SchemaStore by default. If you
+used a custom CI schema, configure it explicitly under
+`lsp.gitlab-ci-bash-ls.settings.yaml.schemas`. Overrides there take precedence.
+
+The default GitLab schema is downloaded by `yaml-language-server`; offline or
+restricted-network setups should use a local schema. See the
+[proxy configuration](#shell-scripts-and-schema-completion-gitlab-ci-bash-ls).
+
+The proxy forwards completion, hover, and diagnostics, **not** formatting,
+code actions/quick fixes, rename, or go-to-definition. If your old setup used the
+YAML server as its formatter, migrate to a suitable formatter such as Prettier
+and copy the relevant formatter configuration to **Gitlab-CI**. The language
+still declares Prettier's YAML parser. Inheriting `yaml.format` settings does not
+make LSP formatting available through the proxy.
+
+### 5. Review editing behavior
+
+- Confirming a script-key completion with Enter or Tab now inserts an indented
+  key and first list item. Directly beneath an empty job header, an unindented
+  partial key can become a job property rather than a global hook. To deliberately
+  create a global hook, use a separate root-level context (for example after a
+  blank separator); prefer `default.before_script` or `default.after_script` for
+  shared hooks. Existing files are not reformatted automatically.
+- Enter after `- |` or `- >` now requests another indentation level, two spaces
+  by default. Empty blocks remain in YAML while being created.
+- Inside a nonempty shell block, Zed can use **Shell Script** indentation settings.
+  If you also want two spaces there, optionally add the following project setting.
+  It affects standalone shell files in that project too:
+
+```json
+{
+  "languages": {
+    "Shell Script": {
+      "tab_size": 2
+    }
+  }
+}
+```
+
+The known `>` highlighting issue is not a migration failure: the raw header can
+be parsed as Bash output redirection. Literal `|` blocks generally work better
+for multiline shell control flow, but `|` preserves line breaks while `>` folds
+many of them. Do not change existing blocks without considering that semantic
+difference. See [highlighting limitations](#highlighting-limitations).
+
+### 6. Reload and verify
+
+After upgrading, restart the language servers or restart Zed. For a dev extension,
+rebuild it in Zed after updating the checkout; reinstall the proxy when its source
+changes because rebuilding the extension does not rebuild the proxy executable.
+
+Check the following:
+
+- The file is recognized as **Gitlab-CI** and the selected servers start without errors.
+- With the proxy's YAML backend enabled, job-key completion works.
+- With Bash and ShellCheck installed, commands receive Bash features and diagnostics.
+- Accepting a script completion and pressing Enter after an empty `- |` or `- >`
+  produces the intended indentation.
+- Your chosen formatter still works for CI files.
+
 ## Language server
 
 Install the `gitlab-ci-ls` binary and make sure it is available on Zed's `PATH`.
 Syntax highlighting works without the binary; language-server features require it.
 
-The server now attaches to **Gitlab-CI**, not to every YAML file, and still receives
-`yaml` as the LSP language ID. If you previously configured this extension under
-`languages.YAML`, move those settings to `languages.Gitlab-CI`. Remove any custom
-file association forcing `.gitlab-ci.yml` to YAML.
+The server attaches to **Gitlab-CI**, not to every YAML file, and still receives
+`yaml` as the LSP language ID. For existing 1.x setups, follow the
+[migration guide](#migrating-from-1x-to-20).
 
 For included CI files with other names, select **Gitlab-CI** manually or add a
 file association in Zed's settings, for example:
