@@ -1,3 +1,5 @@
+mod proxy_install;
+
 use zed_extension_api::{self as zed, LanguageServerId, Result, settings::LspSettings};
 
 const BASH_PROXY: &str = "gitlab-ci-bash-ls";
@@ -19,7 +21,7 @@ impl zed::Extension for GitLabCiLsExtension {
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
         if language_server_id.as_ref() == BASH_PROXY {
-            return bash_proxy_command(worktree);
+            return bash_proxy_command(language_server_id, worktree);
         }
 
         let path = worktree
@@ -51,8 +53,8 @@ impl zed::Extension for GitLabCiLsExtension {
 }
 
 /// The proxy reads the same `lsp.gitlab-ci-bash-ls.settings` at startup and on changes.
-/// The user's settings for Zed's own YAML server are passed along as `inheritedYaml`,
-/// so options such as formatting keep applying to GitLab CI files.
+/// The user's settings for Zed's own YAML server are passed along as `inheritedYaml`.
+/// Only features forwarded by the proxy can use those settings.
 fn bash_proxy_settings(
     language_server_id: &LanguageServerId,
     worktree: &zed::Worktree,
@@ -77,22 +79,19 @@ fn bash_proxy_settings(
 
 /// Like the Helm extension does for yaml-language-server, resolve the backend
 /// servers here and hand their paths to the proxy.
-fn bash_proxy_command(worktree: &zed::Worktree) -> Result<zed::Command> {
+fn bash_proxy_command(
+    language_server_id: &LanguageServerId,
+    worktree: &zed::Worktree,
+) -> Result<zed::Command> {
     let binary = LspSettings::for_worktree(BASH_PROXY, worktree)
         .ok()
         .and_then(|settings| settings.binary);
 
-    let path = binary
-        .as_ref()
-        .and_then(|binary| binary.path.clone())
-        .or_else(|| worktree.which(BASH_PROXY))
-        .ok_or_else(|| {
-            format!(
-                "'{BASH_PROXY}' is not installed. Build it from this extension's repository with \
-                 `cargo install --path {BASH_PROXY}`, or disable it with \
-                 \"language_servers\": [\"...\", \"!{BASH_PROXY}\"]."
-            )
-        })?;
+    let path = proxy_install::binary_path(
+        language_server_id,
+        worktree,
+        binary.as_ref().and_then(|binary| binary.path.clone()),
+    )?;
 
     let mut env = worktree.shell_env();
     for (program, path_env) in BACKENDS {
